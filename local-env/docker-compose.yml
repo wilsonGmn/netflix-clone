@@ -1,0 +1,54 @@
+version: '3.8'
+
+networks:
+  my_network:
+    external:
+      name: minikube
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    networks:
+      my_network:
+        ipv4_address: 192.168.49.100
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow Jenkins to use Docker
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    restart: always
+
+  jenkins-agent:
+    image: jenkins/inbound-agent
+    container_name: jenkins-agent
+    environment:
+      - JENKINS_URL=http://jenkins:8080/
+      - JENKINS_AGENT_NAME=jenkins-agent
+      - JENKINS_SECRET=a35f42966a49d6fe1c140849d8a236e6c93af1844c10f9e3ef493a95b3257732
+      - JENKINS_AGENT_WORKDIR=/home/jenkins/agent
+    depends_on:
+      - jenkins
+    networks:
+      my_network:
+        ipv4_address: 192.168.49.101
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow agent to use Docker
+      - agent_home:/home/jenkins/agent
+
+  sonar:
+    image: sonarqube:community
+    container_name: sonar
+    ports:
+      - "9000:9000"
+    networks:
+      my_network:
+        ipv4_address: 192.168.49.102
+    restart: always
+
+volumes:
+  jenkins_home:
+  agent_home:
