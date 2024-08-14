@@ -15,10 +15,9 @@ pipeline {
                 cleanWs()
             }
         }
-        stage('Test') {
+        stage('Test ENV') {
             steps {
                 sh '''
-                    java -version
                     docker version
                     whoami
                     echo $HOSTNAME
@@ -26,16 +25,16 @@ pipeline {
             }
         }
         
-        stage('Java') {
+        stage('Test Node') {
             steps {
                 script {
-                    docker.image('maven:3.3.3-jdk-8').inside {
-                      sh 'mvn -version'
+                    docker.image('node:20').inside {
+                        sh 'node --version'
+                        sh 'npm --version'
                     }
                 }
             }
         }
-    
         stage('Checkout from Git') {
             steps {
                 withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
@@ -94,6 +93,39 @@ pipeline {
                         }
                     }
                 }
+            }
+        }
+        stage("Docker Build & Push") {
+            steps {
+                dir('DevSecOps-Project') {
+                    script {
+                        // Use withCredentials to inject the API key securely
+                        withCredentials([string(credentialsId: 'tmdb-api-key', variable: 'TMDB_V3_API_KEY')]) {
+                            withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                                // Build the Docker image with the API key
+                                sh "docker build --build-arg TMDB_V3_API_KEY=${TMDB_V3_API_KEY} -t netflix ."
+                                // Tag the Docker image
+                                sh "docker tag netflix ${DOCKER_IMAGE}"
+                                // Push the Docker image to the registry
+                                sh "docker push ${DOCKER_IMAGE}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage("TRIVY") {
+            steps {
+                // Scan the Docker image with Trivy
+                sh "trivy image ${DOCKER_IMAGE} > trivyimage.txt"
+                // Archive the Trivy scan results as an artifact
+                archiveArtifacts artifacts: 'trivyimage.txt', allowEmptyArchive: true
+            }
+        }
+        stage('Deploy to Container') {
+            steps {
+                // Run the Docker container
+                sh 'docker run -d -p 8081:80 ${DOCKER_IMAGE}'
             }
         }
     }
