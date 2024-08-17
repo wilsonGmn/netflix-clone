@@ -4,7 +4,7 @@ networks:
   my_network:
     external:
       name: minikube
-
+    
 services:
   jenkins:
     image: jenkins/jenkins:2.472
@@ -48,6 +48,7 @@ services:
       my_network:
         ipv4_address: 192.168.49.102
     restart: always
+
 
 volumes:
   jenkins_home:
