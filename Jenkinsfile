@@ -1,12 +1,11 @@
 pipeline {
     agent any
     tools {
-        jdk 'jdk' // Ensure 'jdk' is correctly configured in Jenkins
         nodejs 'node' // Ensure 'node' is correctly configured in Jenkins
     }
     environment {
         SCANNER_HOME = tool 'sonar-scanner' // Ensure 'sonar-scanner' is correctly configured in Jenkins
-        GIT_REPO_NAME = "DevSecOps-Project"
+        GIT_REPO_NAME = "netflix-clone"
         GIT_USER_NAME = "wilsonGmn"
         DOCKER_IMAGE = 'wilsongmn/netflix:latest'
     }
@@ -16,31 +15,23 @@ pipeline {
                 cleanWs()
             }
         }
-        stage('Test ENV') {
+        stage('Test') {
             steps {
                 sh '''
                     docker version
                     whoami
                     echo $HOSTNAME
+                    echo $GIT_REPO_NAME
                 '''
             }
         }
-        
-        stage('Test Node') {
-            steps {
-                script {
-                    docker.image('node:20').inside {
-                        sh 'node --version'
-                        sh 'npm --version'
-                    }
-                }
-            }
-        }
+    
         stage('Checkout from Git') {
             steps {
                 withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
                     sh '''
                         git clone https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git
+                        ls -l
                     '''
                 }
             }
@@ -55,18 +46,17 @@ pipeline {
         }
         stage('Install Dependencies') {
             steps {
-                dir('DevSecOps-Project') {
+                dir("${env.GIT_REPO_NAME}") {
                 sh '''
-                    ls -l
                     npm install
+                    ls -la
                 '''
                 }
             }
         }
         stage('OWASP FS SCAN') {
             steps {
-                
-                dir('DevSecOps-Project') {
+                dir("${env.GIT_REPO_NAME}") {
                     dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'dp-check'
                     dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
                 }
@@ -74,10 +64,10 @@ pipeline {
         }
         stage('TRIVY FS SCAN') {
             steps {
-                dir('DevSecOps-Project') {
+                dir("${env.GIT_REPO_NAME}") {
                     script {
                         // Run Trivy using Docker executor
-                        docker.image('aquasec/trivy:0.36.0').inside('--entrypoint=""') {
+                        docker.image('aquasec/trivy:0.36.0').inside('--entrypoint="" --network minikube') {
                             sh '''
                                 # Define a custom cache directory within the project workspace
                                 export TRIVY_CACHE_DIR=$(pwd)/.trivy-cache
@@ -92,14 +82,13 @@ pipeline {
                                 cat trivyfs.txt
                             '''
                         }
-
                     }
                 }
             }
         }
         stage("Docker Build & Push") {
             steps {
-                dir('DevSecOps-Project') {
+                dir("${env.GIT_REPO_NAME}") {
                     script {
                         // Use withCredentials to inject the API key securely
                         withCredentials([string(credentialsId: 'tmdb-api-key', variable: 'TMDB_V3_API_KEY')]) {
@@ -125,7 +114,7 @@ pipeline {
                     def cacheDir = '.trivy-cache'
                     
                     // Run Trivy scan inside Docker container
-                    docker.image(trivyImage).inside('--entrypoint=""') {
+                    docker.image(trivyImage).inside('--entrypoint="" --network minikube') {
                         // Ensure the cache directory is created and used
                         sh """
                             # Set up a custom cache directory
@@ -142,31 +131,38 @@ pipeline {
                                 echo "Trivy scan failed. Please check the logs for details."
                                 exit 1
                             fi
+                            
+                            cat ${resultsFile}
                         """
                     }
-                    
                     // Archive the Trivy scan results
                     archiveArtifacts artifacts: resultsFile, allowEmptyArchive: true
                 }
             }
         }
-        stage('Deploy to Container') {
+       stage('Test Container') {
             steps {
                 script {
                     // Run the Docker container and get the container ID
                     def containerId = sh(
-                        script: 'docker run -d -p 8081:80 ${DOCKER_IMAGE}',
+                        script: 'docker run -d --network minikube -p 8081:80 ${DOCKER_IMAGE}',
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Get the container's IP address
+                    def containerIp = sh(
+                        script: "docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerId}",
                         returnStdout: true
                     ).trim()
 
                     // Wait for the service to be available (e.g., an HTTP service)
                     retry(3) {
                         sleep(time: 10, unit: 'SECONDS') // Wait 10 seconds before retrying
-                        sh "curl --fail http://localhost:8081 || exit 1"
+                        sh "curl --fail http://${containerIp}:80 || exit 1"
                     }
-
+ 
                     // If the service is available, print a success message
-                    echo "Service is available at http://localhost:8081"
+                    echo "Service is available at ${DOCKER_IMAGE}"
 
                     // Stop the Docker container after the check
                     sh "docker stop ${containerId}"
@@ -174,11 +170,6 @@ pipeline {
             }
         }
         stage('K8s Dev Deploy') {
-            agent {
-                docker {
-                    image 'alpine:3.7'
-                }
-            }
             environment {
                 HOST = "cluster.local"
                 PORT = "8443"
@@ -186,40 +177,38 @@ pipeline {
             }
             steps {
                 script {
-                    // Install kubectl
-                    sh '''
-                        wget https://storage.googleapis.com/kubernetes-release/release/$(wget -q -O - https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-                        chmod +x ./kubectl
-                        mv ./kubectl /usr/bin/kubectl
-                    '''
-
-                    // Install netcat and gettext
-                    sh '''
-                        apk add --no-cache netcat-openbsd
-                        apk add --no-cache gettext
-                    '''
-
-                    // Verify envsubst installation
-                    sh 'envsubst -V'
-
-                    // Test connection to Kubernetes cluster
-                    sh '''
-                        echo "Testing connection to $HOST:$PORT"
-                        nc -z -w 5 $HOST $PORT
-                        if [ $? -ne 0 ]; then 
-                            echo "Host $HOST:$PORT is not reachable."; 
-                            exit 1; 
-                        else 
-                            echo "Host $HOST:$PORT is reachable."; 
-                        fi
-                    '''
-
-                    // Set KUBECONFIG and perform the deployment
-                    withEnv(["KUBECONFIG=${KUBECONFIG}"]) {
+                    docker.image('alpine:3.7').inside('-u root --entrypoint=""  --network minikube') {
                         sh '''
+                            apk add --no-cache netcat-openbsd
+                            apk add --no-cache gettext
+                        '''
+    
+                        // Verify envsubst installation
+                        sh 'envsubst -V'
+    
+                        // Test connection to Kubernetes cluster
+                        sh '''
+                            echo "Testing connection to $HOST:$PORT"
+                            nc -z -w 5 $HOST $PORT
+                            if [ $? -ne 0 ]; then 
+                                echo "Host $HOST:$PORT is not reachable."; 
+                                exit 1; 
+                            else 
+                                echo "Host $HOST:$PORT is reachable."; 
+                            fi
+                        '''
+                    }
+                    docker.image('bitnami/kubectl:latest').inside('--entrypoint="" -v /home/wmguaman/.minikube/:/home/wmguaman/.minikube/ --network minikube') {
+                        sh '''
+                            set -e
+                            echo "Using kubeconfig from $KUBECONFIG"
                             kubectl version -o yaml
                             kubectl config get-contexts
                             kubectl get nodes
+                            echo "Deploying from $GIT_REPO_NAME"
+                            kubectl apply -f "$GIT_REPO_NAME/Kubernetes/deployment.yml"
+                            kubectl apply -f "$GIT_REPO_NAME/Kubernetes/service.yml"
+                            kubectl apply -f "$GIT_REPO_NAME/Kubernetes/node-service.yml"
                         '''
                     }
                 }
