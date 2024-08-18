@@ -15,7 +15,7 @@ pipeline {
                 cleanWs()
             }
         }
-        stage('Test') {
+        stage('Test Environment') {
             steps {
                 sh '''
                     docker version
