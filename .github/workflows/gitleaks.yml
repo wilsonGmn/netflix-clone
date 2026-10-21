@@ -1,0 +1,52 @@
+name: Comprehensive Secret Scanning
+
+on:
+  pull_request:
+    branches: [ "main", "master" ]
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  gitleaks:
+    name: Gitleaks (Full History Scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: 
+          fetch-depth: 0 # CRUCIAL: Descarga todo el historial de Git
+      
+      - name: Install Gitleaks CLI
+        run: |
+          wget -O gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+      
+      - name: Run Gitleaks
+        # --log-opts="--all" fuerza a escanear TODOS los commits, no solo el diff del PR
+        run: gitleaks detect --source . --verbose --redact --log-opts="--all"
+
+  trufflehog:
+    name: TruffleHog (Current Files Scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          # --no-git evita el error de "BASE y HEAD son iguales"
+          # Escanea el estado actual de los archivos (ideal para docker-compose.yml)
+          # --only-verified asegura que solo falle si la clave es REAL y activa
+          extra_args: --no-git --only-verified
+
+  semgrep:
+    name: Semgrep (Context-Aware Secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Semgrep Secret Scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/secrets
